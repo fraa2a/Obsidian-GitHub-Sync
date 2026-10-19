@@ -1,7 +1,7 @@
 {
 	"id": "github-sync",
 	"name": "GitHub Sync",
-	"version": "1.0.7",
+	"version": "1.1.0",
 	"minAppVersion": "0.15.0",
 	"description": "Sync your Obsidian vault to GitHub manually, on an interval, or when saving.",
 	"author": "fraa2a",

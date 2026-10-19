@@ -2,33 +2,54 @@ name: Release Obsidian plugin
 
 on:
   push:
+    branches:
+      - main
     tags:
-      - "*"
+      - '[0-9]*'
+    paths:
+      - manifest.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Use Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "18.x"
-
+          node-version: '20'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
       - name: Build plugin
-        run: |
-          npm install
-          npm run build
-
-      - name: Create release
+        run: npm run build
+      - name: Publish release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-
+          version="$(node -p "require('./manifest.json').version")"
+          if [[ "$GITHUB_REF_TYPE" == 'tag' ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="$version"
+          fi
+          if [[ "$tag" != "$version" ]]; then
+            echo "::error::Tag $tag does not match manifest version $version"
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists. Skipping."
+            exit 0
+          fi
           gh release create "$tag" \
-            --title="$tag" \
-            --draft \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --generate-notes \
             main.js manifest.json styles.css
