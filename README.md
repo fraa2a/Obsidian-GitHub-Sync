@@ -1,88 +1,84 @@
-### Changelog 1.0.7
-- Simplified the sync success notice so successful runs show a shorter confirmation message.
+# Obsidian GitHub Sync
 
-### Changelog 1.0.6
-- Plugin loads faster on start up
+A lightweight desktop [Obsidian](https://obsidian.md/) plugin that commits your vault to a Git repository and synchronizes it with GitHub. Works with private or public repositories and HTTPS or SSH remotes.
 
-### Changelog 1.0.5
-- Added option to automatically sync on start up if behind remote
-- Added "Sync with Remote" command to command palette
+## Features
 
-### Changelog 1.0.4
-- Simplified setup process.
-- Allow SSH url for remote.
+- Sync manually from the ribbon icon or the **Sync with Remote** command.
+- Choose automatic sync every N minutes or after saving a file.
+- Save mode also syncs when files or folders are created, renamed, or deleted.
+- Group rapid file changes into a single sync (2 second debounce).
+- Preserve empty vault folders in Git with `.gitkeep` placeholders.
+- Include new files, dotfiles, and deletions when committing.
+- Optionally check for remote changes and sync when Obsidian starts.
+- Configure notice verbosity or hide successful sync notifications.
 
-![](https://img.shields.io/badge/dynamic/json?logo=obsidian&color=%23483699&label=downloads&query=%24%5B%22github-sync%22%5D.downloads&url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsidianmd%2Fobsidian-releases%2Fmaster%2Fcommunity-plugin-stats.json)
-
-# GitHub Sync
-
-Simple plugin that allows you to sync your vault to a personal GitHub repo for **syncing across devices**.
-
-## Highlights
-- Sync your vault with a single ribbon action.
-- Reduce notice noise with configurable notice levels.
-- Keep the success notice to one short confirmation message or hide it entirely.
-
-![](screenshots/ribbon-button.png)
-
-## How to Use
-Click the **Sync with Remote** ribbon icon to pull changes from your GitHub repo and push local changes. 
-If there are any conflicts, the unmerged files will be opened for you to resolve (or just push again with the unresolved conflicts - that should work too).
+This plugin requires **Obsidian desktop** and a local Git installation. It uses the `main` branch and does not support selecting another branch.
 
 ## Setup
 
-### Setting up a GitHub repo
-If your vault is already set up as a GitHub repository, you can skip this step. Otherwise, create a new public or private GitHub repository that you want to use for your vault.
+1. Install Git and configure authentication with GitHub. SSH keys or a credential manager are recommended.
+2. Create an empty GitHub repository for your notes. A **private** repository is recommended for personal vaults.
+3. Open a terminal in your vault folder and initialize Git if needed:
 
-Navigate to your vault and `git init` the folder. 
-At this point, add anything you don't want syncing across your devices to a `.gitignore`.
+   ```bash
+   git init
+   git branch -M main
+   git add --all
+   git commit -m "Initial vault backup"
+   git remote add origin git@github.com:USERNAME/REPOSITORY.git
+   git push -u origin main
+   ```
 
-This is not required, but you should try pushing your vault to your GitHub repository before continuing to make sure you can do that in the first place before using this plugin:
-```
-git add .
-git commit -m "my obsidian vault first commit"
-git branch -M main
-git remote add origin <remote-url>
-git push -u origin main
-```
-Verify that this works before continuing.
+   If the vault is already a Git repository with a working remote, you can skip the initialization steps. Replace the example remote with your own HTTPS or SSH URL.
+4. In **Obsidian Settings > Community plugins > GitHub Sync**, paste the repository URL in **Remote URL**.
+5. Click the GitHub ribbon icon or run **Sync with Remote** from the command palette.
 
-> For simplicity, this plugin does not support branching. Everything gets pushed to main.
+Git must be available on your system `PATH`. If it is not, configure **Git binary location** with the directory containing `git` or `git.exe`.
 
-### Setting up remote URL
-All this plugin needs now is your GitHub repo's remote URL. You can grab this from the GitHub repo page for your vault:
+## Automatic sync
 
-![](screenshots/remote-url.png)
+Under **Automatic sync mode**, choose one of the following:
 
-You can use either the HTTPS or SSH url. Grab it and paste it in the GitHub Sync settings tab like so:
+| Mode | Behavior |
+| --- | --- |
+| **Disabled** | Sync only on command, ribbon click, or the optional startup sync. |
+| **Every N minutes** | Syncs on a configurable timer while Obsidian is open. |
+| **On file save** | Syncs after Obsidian reports a saved change, including creation, rename, and deletion events. |
 
-![](screenshots/new-settings-page.png)
+The save mode waits 2 seconds after the most recent change before running. This reduces duplicate commits and network requests during bursts of edits. Changes made during an active sync trigger another pass afterward.
 
-Done. Try clicking the Sync button now - it should work.
+You can change modes without restarting Obsidian. Users upgrading from an older version keep their existing interval setting automatically.
 
-The first time may prompt you to authenticate if you haven't, or it may ask you to configure git with your email and name.
+Each sync stages local changes, commits them when needed, fetches and pulls from `origin/main`, then pushes to `origin/main`. A sync also retries pushing local commits left unpushed after a previous error.
 
-### Optional
+## Empty folders
 
-You can reduce UI noise from sync operations with the `Notice level` setting:
-- `ALL` shows every GitHub Sync notice.
-- `WARNING` shows only warnings and errors.
-- `ERROR` shows only error notices, so sync can run mostly in the background.
+Git does not store empty directories. Before each sync, this plugin adds an empty `.gitkeep` file to any vault folder without other direct files, including a folder containing only subfolders.
 
-You can also use `Hide Success Message` to suppress the single confirmation notice shown after a successful sync. With the toggle off and `Notice level` set to `ALL`, a successful sync shows exactly one success message instead of multiple informational notices.
+Folders excluded by `.gitignore` are respected. Existing `.gitkeep` files are not deleted, even if a folder later gains files.
 
-If your git binary is not accessible from your system PATH (i.e. if you open up Command Prompt or Terminal and can't use git), you need to provide its location. I initialize git only when launching Cmder, so I need to input a custom path like so: `C:/Users/Kevin/scoop/apps/cmder-full/current/vendor/git-for-windows/cmd/`. Note that I excluded `git.exe` from the end of the path.
+## Notifications and startup behavior
 
-You can also include your GitHub username and personal access token in the remote url. Like so: `https://{username}:{personal access token}@github.com/{username}/{repository name}`. This is not recommended anymore, but it was how the plugin worked prior to 1.0.4. If you're doing this, you'll have to add `.obsidian/plugins/github-sync/data.json` to your `.gitignore`. See: https://github.com/kevinmkchin/Obsidian-GitHub-Sync/issues/2#issuecomment-2168384792.
+- **Notice level**: `ALL`, `WARNING`, or `ERROR`.
+- **Hide success message**: Suppress success notifications.
+- **Check status on startup**: Check if the vault is behind the remote.
+- **Auto sync on startup**: If behind, sync automatically instead of only showing a warning.
 
-## Rationale
+## Security and conflicts
 
-This plugin is for personal use, but I figured others might find it useful too. This is basically a glorified script - the code is tiny its like ~200 SLOC.
-I keep a private GitHub repository for my Markdown notes, and I wanted some way to pull/push my notes from within Obsidian without opening a command line to run a script or set up an auto sync script on a timer. I don't use Git branches for my notes so this plugin doesn't support branching. 
+Avoid storing GitHub personal access tokens directly in the remote URL. Plugin settings are saved inside the vault, which may itself be synchronized. Use SSH or a system credential manager instead.
 
-The Node API used by this plugin works with any remote host, but I use GitHub so I centered the whole plugin around that.
+Review your vault's `.gitignore` before the first push. For example, you may wish to exclude workspace state, machine-specific settings, or sensitive files.
 
-Mobile support could come in the future depending on how much I need it myself.
+If Git reports a merge conflict, the plugin lists and opens the affected files. **Resolve the conflicts manually before syncing again.** The plugin does not force-push or silently choose one side.
 
-Follow my stuff at https://kevin.gd/
+## Troubleshooting
 
+- **Git cannot be found**: Install Git, ensure it is on `PATH`, or set the Git binary directory in the plugin settings.
+- **Not a Git repository**: Run `git init` in the vault folder, then make an initial commit.
+- **Authentication failed**: Check your SSH keys or configured HTTPS credential helper by running `git push` in a terminal.
+- **Branch not found**: The plugin uses `main`. Ensure that your local and remote repositories both have a `main` branch.
+- **Files missing on GitHub**: Check your `.gitignore` and the error notices in Obsidian.
+
+Source code and issues: https://github.com/fraa2a/Obsidian-GitHub-Sync
