@@ -2,6 +2,15 @@
 
 A lightweight desktop [Obsidian](https://obsidian.md/) plugin that commits your vault to a Git repository and synchronizes it with GitHub. Works with private or public repositories and HTTPS or SSH remotes.
 
+## Installation
+
+1. Open the [latest GitHub release](https://github.com/fraa2a/Obsidian-GitHub-Sync/releases/latest).
+2. Download `main.js`, `manifest.json`, and `styles.css`.
+3. Place these three files in `<your-vault>/.obsidian/plugins/github-sync/`.
+4. Restart Obsidian, open **Settings > Community plugins**, and enable **GitHub Sync**.
+
+When updating an existing installation, replace the same three files with those from the new release.
+
 ## Features
 
 - Sync manually from the ribbon icon or the **Sync with Remote** command.
