@@ -1,19 +1,16 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, Vault } from 'obsidian';
-import { simpleGit, SimpleGit, CleanOptions, SimpleGitOptions } from 'simple-git';
-import { setIntervalAsync, clearIntervalAsync } from 'set-interval-async';
-
-let simpleGitOptions: Partial<SimpleGitOptions>;
-let git: SimpleGit;
+import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { simpleGit, SimpleGit } from 'simple-git';
+import type { SimpleGitOptions } from 'simple-git';
 
 type NoticeLevelSetting = 'ALL' | 'WARNING' | 'ERROR';
-type LegacyNoticeLevelSetting = NoticeLevelSetting | 'WARNINGS';
 type NoticeSeverity = 'INFO' | 'WARNING' | 'ERROR';
-
+type AutoSyncMode = 'off' | 'interval' | 'on-save';
 
 interface GHSyncSettings {
 	remoteURL: string;
 	gitLocation: string;
 	syncinterval: number;
+	autoSyncMode: AutoSyncMode;
 	isSyncOnLoad: boolean;
 	checkStatusOnLoad: boolean;
 	noticeLevel: NoticeLevelSetting;
@@ -24,240 +21,260 @@ const DEFAULT_SETTINGS: GHSyncSettings = {
 	remoteURL: '',
 	gitLocation: '',
 	syncinterval: 0,
+	autoSyncMode: 'off',
 	isSyncOnLoad: false,
 	checkStatusOnLoad: true,
 	noticeLevel: 'ALL',
 	showSyncSuccessNotice: true,
-}
+};
 
+const SAVE_SYNC_DEBOUNCE_MS = 2000;
 
 export default class GHSyncPlugin extends Plugin {
-
 	settings: GHSyncSettings;
+	private syncPromise: Promise<void> | null = null;
+	private intervalTimer: number | null = null;
+	private saveSyncTimer: number | null = null;
+	private saveSyncPending = false;
 
 	private shouldShowNotice(severity: NoticeSeverity): boolean {
 		switch (this.settings.noticeLevel) {
 			case 'ERROR':
 				return severity === 'ERROR';
 			case 'WARNING':
-				return severity === 'WARNING' || severity === 'ERROR';
-			case 'ALL':
+				return severity !== 'INFO';
 			default:
 				return true;
 		}
 	}
 
 	private showNotice(message: unknown, severity: NoticeSeverity, timeout?: number): void {
-		if (!this.shouldShowNotice(severity)) {
-			return;
+		if (this.shouldShowNotice(severity)) {
+			new Notice(message instanceof Error ? message.message : String(message), timeout);
 		}
-
-		const text = message instanceof Error ? message.message : String(message);
-		new Notice(text, timeout);
 	}
 
-	private showSyncSuccessNotice(): void {
-		if (!this.settings.showSyncSuccessNotice) {
-			return;
+	private createGit(): SimpleGit {
+		if (!(this.app.vault.adapter instanceof FileSystemAdapter)) {
+			throw new Error('GitHub Sync requires a desktop vault stored on disk.');
 		}
-
-		this.showNotice('github sync successful', 'INFO');
-	}
-
-	async SyncNotes()
-	{
-		const remote = this.settings.remoteURL.trim();
-
-		simpleGitOptions = {
-			//@ts-ignore
-		    baseDir: this.app.vault.adapter.getBasePath(),
-		    binary: this.settings.gitLocation + "git",
-		    maxConcurrentProcesses: 6,
-		    trimmed: false,
+		const location = this.settings.gitLocation.trim().replace(/[\\/]+$/, '');
+		const binary = location ? location + '/' + (process.platform === 'win32' ? 'git.exe' : 'git') : 'git';
+		const options: Partial<SimpleGitOptions> = {
+			baseDir: this.app.vault.adapter.getBasePath(),
+			binary,
+			maxConcurrentProcesses: 1,
+			trimmed: false,
 		};
-		git = simpleGit(simpleGitOptions);
-
-		let os = require("os");
-		let hostname = os.hostname();
-
-		let statusResult = await git.status().catch((e) => {
-			this.showNotice("Vault is not a Git repo or git binary cannot be found.", 'ERROR', 10000);
-			return; })
-
-		if (!statusResult) {
-			return;
-		}
-
-		//@ts-ignore
-		let clean = statusResult.isClean();
-
-    	let date = new Date();
-    	let msg = hostname + " " + date.getFullYear() + "-" + (date.getMonth() + 1) + "-" + date.getDate() + ":" + date.getHours() + ":" + date.getMinutes() + ":" + date.getSeconds();
-
-		// git add .
-		// git commit -m hostname-date-time
-		if (!clean) {
-			try {
-				await git
-		    		.add("./*")
-		    		.commit(msg);
-		    } catch (e) {
-		    	this.showNotice(e, 'ERROR', 10000);
-		    	return;
-		    }
-		}
-
-		// configure remote
-		try {
-			await git.removeRemote('origin').catch((e) => { this.showNotice(e, 'ERROR', 10000); });
-			await git.addRemote('origin', remote).catch((e) => { this.showNotice(e, 'ERROR', 10000); });
-		}
-		catch (e) {
-			this.showNotice(e, 'ERROR', 10000);
-			return;
-		}
-		// check if remote url valid by fetching
-		try {
-			await git.fetch();
-		} catch (e) {
-			this.showNotice(String(e) + "\nGitHub Sync: Invalid remote URL.", 'ERROR', 10000);
-			return;
-		}
-
-		// git pull origin main
-	    try {
-	    	//@ts-ignore
-	    	await git.pull('origin', 'main', { '--no-rebase': null }, (err, update) => {
-	   		})
-	    } catch (e) {
-	    	let conflictStatus = await git.status().catch((error) => { this.showNotice(error, 'ERROR', 10000); return; });
-	    	if (!conflictStatus) {
-	    		return;
-	    	}
-    		let conflictMsg = "Merge conflicts in:";
-	    	//@ts-ignore
-			for (let c of conflictStatus.conflicted)
-			{
-				conflictMsg += "\n\t"+c;
-			}
-			conflictMsg += "\nResolve them or click sync button again to push with unresolved conflicts."
-			this.showNotice(conflictMsg, 'WARNING');
-			//@ts-ignore	
-			for (let c of conflictStatus.conflicted)
-			{
-				this.app.workspace.openLinkText("", c, true);
-			}
-	    	return;
-	    }
-
-		// resolve merge conflicts
-		// git push origin main
-	    if (!clean) {
-		    try {
-		    	await git.push('origin', 'main', ['-u']);
-		    } catch (e) {
-		    	this.showNotice(e, 'ERROR', 10000);
-		    	return;
-			}
-	    }
-
-		this.showSyncSuccessNotice();
+		return simpleGit(options);
 	}
 
-	async CheckStatusOnStart()
-	{
-		// check status
-		try {
-			simpleGitOptions = {
-				//@ts-ignore
-			    baseDir: this.app.vault.adapter.getBasePath(),
-			    binary: this.settings.gitLocation + "git",
-			    maxConcurrentProcesses: 6,
-			    trimmed: false,
-			};
-			git = simpleGit(simpleGitOptions);
+	// Git cannot store an empty directory. A placeholder makes the directory part of the commit.
+	private async trackEmptyFolders(git: SimpleGit): Promise<void> {
+		const folders = this.app.vault.getAllLoadedFiles().filter(
+			(file): file is TFolder => file instanceof TFolder && file.path.length > 0 && !file.path.split('/').includes('.git')
+		);
+		const placeholders: string[] = [];
+		for (const folder of folders) {
+			// Subfolders do not count as files. Keep even a parent containing only empty folders.
+			if (folder.children.some(child => child instanceof TFile && child.name !== '.gitkeep')) {
+				continue;
+			}
+			const path = folder.path + '/.gitkeep';
+			if (!(await this.app.vault.adapter.exists(path))) {
+				placeholders.push(path);
+			}
+		}
+		if (placeholders.length === 0) {
+			return;
+		}
 
-			//check for remote changes
-			// git branch --set-upstream-to=origin/main main
-			await git.branch({'--set-upstream-to': 'origin/main'});
-			let statusUponOpening = await git.fetch().status();
-			if (statusUponOpening.behind > 0)
-			{
-				// Automatically sync if needed
-				if (this.settings.isSyncOnLoad == true)
-				{
-					this.SyncNotes();
-				}
-				else
-				{
-					this.showNotice("GitHub Sync: " + statusUponOpening.behind + " commits behind remote.\nClick the GitHub ribbon icon to sync.", 'WARNING');
-				}
+		// Never create placeholders inside folders excluded by the vault's gitignore rules.
+		const ignored = new Set(await git.checkIgnore(placeholders));
+		for (const path of placeholders) {
+			if (!ignored.has(path)) {
+				await this.app.vault.create(path, '');
 			}
-			else
-			{
-				this.showNotice("GitHub Sync: up to date with remote.", 'INFO');
-			}
-		} catch (e) {
-			// don't care
-			// based
 		}
 	}
 
-	async onload() {
+	async SyncNotes(): Promise<void> {
+		if (this.syncPromise) {
+			return this.syncPromise;
+		}
+		const sync = this.performSync();
+		this.syncPromise = sync;
+		try {
+			await sync;
+		} finally {
+			this.syncPromise = null;
+			if (this.saveSyncPending && this.settings.autoSyncMode === 'on-save') {
+				this.saveSyncPending = false;
+				this.scheduleSaveSync();
+			}
+		}
+	}
+
+	private async performSync(): Promise<void> {
+		const remote = this.settings.remoteURL.trim();
+		if (!remote) {
+			this.showNotice('GitHub Sync: configure a remote URL before syncing.', 'ERROR', 10000);
+			return;
+		}
+
+		let git: SimpleGit;
+		try {
+			git = this.createGit();
+			await git.status();
+		} catch {
+			this.showNotice('GitHub Sync: vault is not a Git repository or Git could not be found.', 'ERROR', 10000);
+			return;
+		}
+
+		try {
+			const before = await git.status();
+			if (before.conflicted.length > 0) {
+				this.showConflicts(before.conflicted);
+				return;
+			}
+
+			await this.trackEmptyFolders(git);
+			await git.add(['--all']);
+			if (!(await git.status()).isClean()) {
+				const now = new Date();
+				const hostname = require('os').hostname();
+				const msg = hostname + ' ' + now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate() + ':' + now.getHours() + ':' + now.getMinutes() + ':' + now.getSeconds();
+				await git.commit(msg);
+			}
+
+			const origin = (await git.getRemotes(true)).find(entry => entry.name === 'origin');
+			if (!origin) {
+				await git.addRemote('origin', remote);
+			} else if (origin.refs.fetch !== remote || origin.refs.push !== remote) {
+				await git.remote(['set-url', 'origin', remote]);
+			}
+
+			await git.fetch('origin');
+			await git.pull('origin', 'main', { '--no-rebase': null });
+			// Also retry commits from an earlier failed push, even if this run has no local changes.
+			await git.push('origin', 'main', ['-u']);
+			if (this.settings.showSyncSuccessNotice) {
+				this.showNotice('GitHub Sync successful.', 'INFO');
+			}
+		} catch (error) {
+			const status = await git.status().catch(() => null);
+			if (status && status.conflicted.length > 0) {
+				this.showConflicts(status.conflicted);
+			} else {
+				this.showNotice(error, 'ERROR', 10000);
+			}
+		}
+	}
+
+	private showConflicts(paths: string[]): void {
+		this.showNotice('GitHub Sync: resolve merge conflicts before syncing again:\n' + paths.join('\n'), 'WARNING', 10000);
+		for (const path of paths) {
+			void this.app.workspace.openLinkText('', path, true);
+		}
+	}
+
+	private async CheckStatusOnStart(): Promise<void> {
+		try {
+			const git = this.createGit();
+			await git.branch({ '--set-upstream-to': 'origin/main' });
+			const status = await git.fetch().status();
+			if (status.behind > 0) {
+				if (this.settings.isSyncOnLoad) {
+					void this.SyncNotes();
+				} else {
+					this.showNotice('GitHub Sync: ' + status.behind + ' commits behind remote. Click the ribbon icon to sync.', 'WARNING');
+				}
+			} else {
+				this.showNotice('GitHub Sync: up to date with remote.', 'INFO');
+			}
+		} catch {
+			// Initial setup may not have an origin/main tracking branch yet.
+		}
+	}
+
+	private onVaultChange(file: TAbstractFile): void {
+		if (this.settings.autoSyncMode !== 'on-save' || file.name === '.gitkeep' || file.path.startsWith('.git/')) {
+			return;
+		}
+		this.scheduleSaveSync();
+	}
+
+	private scheduleSaveSync(): void {
+		if (this.saveSyncTimer !== null) {
+			window.clearTimeout(this.saveSyncTimer);
+		}
+		this.saveSyncTimer = window.setTimeout(() => {
+			this.saveSyncTimer = null;
+			if (this.syncPromise) {
+				this.saveSyncPending = true;
+			} else {
+				void this.SyncNotes();
+			}
+		}, SAVE_SYNC_DEBOUNCE_MS);
+	}
+
+	refreshAutoSync(): void {
+		if (this.intervalTimer !== null) {
+			window.clearInterval(this.intervalTimer);
+			this.intervalTimer = null;
+		}
+		if (this.saveSyncTimer !== null) {
+			window.clearTimeout(this.saveSyncTimer);
+			this.saveSyncTimer = null;
+		}
+		this.saveSyncPending = false;
+		if (this.settings.autoSyncMode === 'interval' && Number.isFinite(this.settings.syncinterval) && this.settings.syncinterval > 0) {
+			this.intervalTimer = window.setInterval(() => { void this.SyncNotes(); }, this.settings.syncinterval * 60 * 1000);
+		}
+	}
+
+	async onload(): Promise<void> {
 		await this.loadSettings();
-
-		const ribbonIconEl = this.addRibbonIcon('github', 'Sync with Remote', (evt: MouseEvent) => {
-			this.SyncNotes();
-		});
+		const ribbonIconEl = this.addRibbonIcon('github', 'Sync with Remote', () => { void this.SyncNotes(); });
 		ribbonIconEl.addClass('gh-sync-ribbon');
-
-		this.addCommand({
-			id: 'github-sync-command',
-			name: 'Sync with Remote',
-			callback: () => {
-				this.SyncNotes();
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
+		this.addCommand({ id: 'github-sync-command', name: 'Sync with Remote', callback: () => { void this.SyncNotes(); } });
 		this.addSettingTab(new GHSyncSettingTab(this.app, this));
 
-		if (!isNaN(this.settings.syncinterval))
-		{
-			let interval: number = this.settings.syncinterval;
-			if (interval >= 1)
-			{
-				try {
-					setIntervalAsync(async () => {
-						await this.SyncNotes();
-					}, interval * 60 * 1000);
-					//this.registerInterval(setInterval(this.SyncNotes, interval * 6 * 1000));
-					this.showNotice("Auto sync enabled", 'INFO');
-				} catch (e) {
-					
-				}
-			}
-		}
-
-		if (this.settings.checkStatusOnLoad)
-		{
-			this.CheckStatusOnStart();
+		// Register after the initial vault load so initial create events do not trigger a sync.
+		this.app.workspace.onLayoutReady(() => {
+			this.registerEvent(this.app.vault.on('modify', file => this.onVaultChange(file)));
+			this.registerEvent(this.app.vault.on('create', file => this.onVaultChange(file)));
+			this.registerEvent(this.app.vault.on('delete', file => this.onVaultChange(file)));
+			this.registerEvent(this.app.vault.on('rename', file => this.onVaultChange(file)));
+		});
+		this.refreshAutoSync();
+		if (this.settings.checkStatusOnLoad) {
+			void this.CheckStatusOnStart();
 		}
 	}
 
-	onunload() {
-
+	onunload(): void {
+		if (this.intervalTimer !== null) {
+			window.clearInterval(this.intervalTimer);
+		}
+		if (this.saveSyncTimer !== null) {
+			window.clearTimeout(this.saveSyncTimer);
+		}
 	}
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-
-		if ((this.settings.noticeLevel as LegacyNoticeLevelSetting) === 'WARNINGS') {
+	async loadSettings(): Promise<void> {
+		const saved = (await this.loadData()) as Partial<GHSyncSettings> | null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+		if ((this.settings.noticeLevel as string) === 'WARNINGS') {
 			this.settings.noticeLevel = 'WARNING';
 		}
+		// Existing users with an interval configured keep that behavior after upgrading.
+		if (!saved || !saved.autoSyncMode) {
+			this.settings.autoSyncMode = this.settings.syncinterval > 0 ? 'interval' : 'off';
+		}
 	}
 
-	async saveSettings() {
+	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 	}
 }
@@ -281,7 +298,7 @@ class GHSyncSettingTab extends PluginSettingTab {
 		howto.createEl("br");
         const linkEl = howto.createEl('p');
         linkEl.createEl('span', { text: 'See the ' });
-        linkEl.createEl('a', { href: 'https://github.com/kevinmkchin/Obsidian-GitHub-Sync/blob/main/README.md', text: 'README' });
+        linkEl.createEl('a', { href: 'https://github.com/fraa2a/Obsidian-GitHub-Sync#readme', text: 'README' });
         linkEl.createEl('span', { text: ' for more information and troubleshooting.' });
 
 		new Setting(containerEl)
@@ -352,13 +369,32 @@ class GHSyncSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Auto sync at interval')
-			.setDesc('Set minute interval after which your vault is synced automatically. Auto sync is disabled if this field is left empty or not a positive integer. Restart Obsidan to take effect.')
-			.addText(text => text
-				.setValue(String(this.plugin.settings.syncinterval))
-				.onChange(async (value) => {
-					this.plugin.settings.syncinterval = Number(value);
+			.setName('Automatic sync mode')
+			.setDesc('Choose interval sync or sync when a file is saved, created, renamed, or deleted. Save sync groups rapid changes into one commit.')
+			.addDropdown(dropdown => dropdown
+				.addOption('off', 'Disabled')
+				.addOption('interval', 'Every N minutes')
+				.addOption('on-save', 'On file save')
+				.setValue(this.plugin.settings.autoSyncMode)
+				.onChange(async (value: AutoSyncMode) => {
+					this.plugin.settings.autoSyncMode = value;
 					await this.plugin.saveSettings();
+					this.plugin.refreshAutoSync();
+					this.display();
 				}));
+
+		if (this.plugin.settings.autoSyncMode === 'interval') {
+			new Setting(containerEl)
+				.setName('Auto sync interval (minutes)')
+				.setDesc('How often to sync. Set a positive number. Changes apply immediately.')
+				.addText(text => text
+					.setValue(String(this.plugin.settings.syncinterval))
+					.onChange(async value => {
+						const minutes = Number(value);
+						this.plugin.settings.syncinterval = Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
+						await this.plugin.saveSettings();
+						this.plugin.refreshAutoSync();
+					}));
+		}
 	}
 }
